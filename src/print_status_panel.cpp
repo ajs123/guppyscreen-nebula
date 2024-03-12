@@ -538,7 +538,7 @@ void PrintStatusPanel::update_layers(json &info) {
     new_total_layer = v.template get<int>();
   }
 
-  if (new_total_layer > total_layer || new_cur_layer > cur_layer) {
+  if (new_total_layer != total_layer || new_cur_layer != cur_layer) {
     total_layer = new_total_layer;
     cur_layer = new_cur_layer;
 
