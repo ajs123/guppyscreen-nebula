@@ -460,6 +460,7 @@
 #    define EVDEV_VER_MIN         300 //0
 #    define EVDEV_VER_MAX      3749 //4096
 #  endif  /*EVDEV_CALIBRATE*/
+
 #endif  /*USE_EVDEV*/
 
 /*-------------------------------------------------
