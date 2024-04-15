@@ -161,4 +161,7 @@ build:
 	$(MAKE) clean
 	$(MAKE) 
 
+strip:
+	$(STRIP) $(BUILD_BIN_DIR)/$(BIN)
+
 -include			$(DEPS)
