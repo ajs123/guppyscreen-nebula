@@ -18,21 +18,19 @@ class GuppyScreen {
  private:
   static GuppyScreen *instance;
   static lv_style_t style_container;
+  static lv_style_t style_imgbtn_default;
   static lv_style_t style_imgbtn_pressed;
   static lv_style_t style_imgbtn_disabled;
   static lv_theme_t th_new;
+#ifndef OS_ANDROID
+  static lv_obj_t *screen_saver;
+#endif
+  static std::mutex lv_lock;
+  static KWebSocketClient ws;
 
-  std::mutex lv_lock;
-
-  KWebSocketClient ws;
   SpoolmanPanel spoolman_panel;
   MainPanel main_panel;
   InitPanel init_panel;
-
-
-#ifndef OS_ANDROID
-  lv_obj_t *gs_screen_saver;
-#endif
 
  public:
   GuppyScreen();
@@ -41,19 +39,14 @@ class GuppyScreen {
 
   std::mutex &get_lock();
 
-#ifndef OS_ANDROID
-  lv_obj_t *get_screen_saver() {
-    return gs_screen_saver;
-  }
-#endif
-
   void connect_ws(const std::string &url);
   static GuppyScreen *get();
-  static GuppyScreen *init(std::function<void()> hal_init);
+  static GuppyScreen *init(std::function<void(lv_color_t, lv_color_t)> hal_init);
   static void loop();
   static void new_theme_apply_cb(lv_theme_t *th, lv_obj_t *obj);
   static void handle_calibrated(lv_event_t *event);
   static void save_calibration_coeff(lv_tc_coeff_t coeff);
+  static void refresh_theme();
 };
 
 #endif  // __GUPPY_SCREEN_H__

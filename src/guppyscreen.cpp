@@ -12,25 +12,31 @@
   #include "spdlog/sinks/android_sink.h"
 #endif
 
+#include "printer_select_panel.h"
 #include "spdlog/spdlog.h"
 #include "state.h"
+#include "theme.h"
 
 GuppyScreen *GuppyScreen::instance = NULL;
 lv_style_t GuppyScreen::style_container;
+lv_style_t GuppyScreen::style_imgbtn_default;
 lv_style_t GuppyScreen::style_imgbtn_pressed;
 lv_style_t GuppyScreen::style_imgbtn_disabled;
 lv_theme_t GuppyScreen::th_new;
 
+#ifndef OS_ANDROID
+lv_obj_t *GuppyScreen::screen_saver = NULL;
+#endif
+
+KWebSocketClient GuppyScreen::ws(NULL);
+
+std::mutex GuppyScreen::lv_lock;
+
 GuppyScreen::GuppyScreen()
-  : ws(NULL)
-  , spoolman_panel(ws, lv_lock)
+  : spoolman_panel(ws, lv_lock)
   , main_panel(ws, lv_lock, spoolman_panel)
   , init_panel(main_panel, main_panel.get_tune_panel().get_bedmesh_panel(), lv_lock)
-#ifndef OS_ANDROID
-  , gs_screen_saver(lv_obj_create(lv_scr_act()))
-#endif
 {
-  ws.register_notify_update(State::get_instance());
   main_panel.create_panel();
 }
 
@@ -42,13 +48,32 @@ GuppyScreen *GuppyScreen::get() {
   return instance;
 }
 
-GuppyScreen *GuppyScreen::init(std::function<void()> hal_init) {
+GuppyScreen *GuppyScreen::init(std::function<void(lv_color_t, lv_color_t)> hal_init) {
   hlog_disable();
 
   // config
   Config *conf = Config::get_instance();
   const std::string ll_path = conf->df() + "log_level";
-  auto ll = spdlog::level::from_str(conf->get<std::string>(ll_path));
+  auto ll = spdlog::level::from_str(
+      conf->get_json("/printers").empty() 
+      ? "debug" 
+      : conf->get<std::string>(ll_path));
+
+  auto selected_theme = conf->get_json("/theme").empty()
+          ? "blue.json"
+          : conf->get<std::string>("/theme") + ".json";
+  auto theme_config = fs::canonical(conf->get_path()).parent_path() / "themes" / selected_theme;
+
+  ThemeConfig *theme_conf = ThemeConfig::get_instance();
+  theme_conf->init(theme_config);
+
+  auto primary_color = theme_conf->get_json("/primary_color").empty()
+          ? lv_color_hex(0x2196F3)
+          : lv_color_hex(std::stoul(theme_conf->get<std::string>("/primary_color"), nullptr, 16));
+
+  auto secondary_color = theme_conf->get_json("/secondary_color").empty()
+          ? lv_color_hex(0xF44336)
+          : lv_color_hex(std::stoul(theme_conf->get<std::string>("/secondary_color"), nullptr, 16));
 
 #ifndef OS_ANDROID
   auto console_sink = std::make_shared<spdlog::sinks::stdout_sink_mt>();
@@ -82,16 +107,20 @@ GuppyScreen *GuppyScreen::init(std::function<void()> hal_init) {
   fbdev_unblank();
 #endif  // OS_ANDROID
 
-  hal_init();
+  hal_init(primary_color, secondary_color);
   lv_png_init();
 
   lv_style_init(&style_container);
   lv_style_set_border_width(&style_container, 0);
   lv_style_set_radius(&style_container, 0);
 
+//  lv_style_init(&style_imgbtn_default);
+//  lv_style_set_img_recolor_opa(&style_imgbtn_default, LV_OPA_100);
+//  lv_style_set_img_recolor(&style_imgbtn_default, lv_color_black());
+
   lv_style_init(&style_imgbtn_pressed);
   lv_style_set_img_recolor_opa(&style_imgbtn_pressed, LV_OPA_100);
-  lv_style_set_img_recolor(&style_imgbtn_pressed, lv_palette_main(LV_PALETTE_BLUE));
+  lv_style_set_img_recolor(&style_imgbtn_pressed, primary_color);
 
   lv_style_init(&style_imgbtn_disabled);
   lv_style_set_img_recolor_opa(&style_imgbtn_disabled, LV_OPA_100);
@@ -100,7 +129,6 @@ GuppyScreen *GuppyScreen::init(std::function<void()> hal_init) {
   /*Initia1ize the new theme from the current theme*/
 
   lv_theme_t *th_act = lv_disp_get_theme(NULL);
-//  static lv_theme_t th_new;
   th_new = *th_act;
 
   /*Set the parent theme and the style apply callback for the new theme*/
@@ -110,16 +138,23 @@ GuppyScreen *GuppyScreen::init(std::function<void()> hal_init) {
   /*Assign the new theme to the current display*/
   lv_disp_set_theme(NULL, &th_new);
 
-  GuppyScreen *gs = GuppyScreen::get();
-  std::string ws_url = fmt::format("ws://{}:{}/websocket",
-                                   conf->get<std::string>(conf->df() + "moonraker_host"),
-                                   conf->get<uint32_t>(conf->df() + "moonraker_port"));
+  ws.register_notify_update(State::get_instance());
 
-  spdlog::info("connecting to printer at {}", ws_url);
-  gs->connect_ws(ws_url);
+  GuppyScreen *gs = GuppyScreen::get();
+  auto printers = conf->get_json("/printers");
+  if (!printers.empty()) {
+    // start initializing all guppy components
+    std::string ws_url = fmt::format("ws://{}:{}/websocket",
+                                     conf->get<std::string>(conf->df() + "moonraker_host"),
+                                     conf->get<uint32_t>(conf->df() + "moonraker_port"));
+
+    spdlog::info("connecting to printer at {}", ws_url);
+    gs->connect_ws(ws_url);
+  }
 
 #ifndef OS_ANDROID
-  lv_obj_t *screen_saver = gs->get_screen_saver();
+  screen_saver = lv_obj_create(lv_scr_act());
+
   lv_obj_set_size(screen_saver, LV_PCT(100), LV_PCT(100));
   lv_obj_set_style_bg_opa(screen_saver, LV_OPA_100, 0);
   lv_obj_move_background(screen_saver);
@@ -155,12 +190,9 @@ GuppyScreen *GuppyScreen::init(std::function<void()> hal_init) {
 
 void GuppyScreen::loop() {
   /*Handle LitlevGL tasks (tickless mode)*/
-  auto &lv_lock = GuppyScreen::get()->get_lock();
-
 #if !defined(SIMULATOR) && !defined(OS_ANDROID)
   std::atomic_bool is_sleeping(false);
   Config *conf = Config::get_instance();
-  lv_obj_t *screen_saver = GuppyScreen::get()->get_screen_saver();
   int32_t display_sleep = conf->get<int32_t>("/display_sleep_sec") * 1000;
 #endif
 
@@ -199,6 +231,7 @@ std::mutex &GuppyScreen::get_lock() {
 }
 
 void GuppyScreen::connect_ws(const std::string &url) {
+  init_panel.set_message(LV_SYMBOL_WARNING " Waiting for printer to initialize...");
   ws.connect(url.c_str(),
    [this]() { init_panel.connected(ws); },
    [this]() { init_panel.disconnected(ws); });
@@ -212,6 +245,7 @@ void GuppyScreen::new_theme_apply_cb(lv_theme_t *th, lv_obj_t *obj) {
   }
 
   if (lv_obj_check_type(obj, &lv_imgbtn_class)) {
+//    lv_obj_add_style(obj, &style_imgbtn_default, LV_STATE_DEFAULT);
     lv_obj_add_style(obj, &style_imgbtn_pressed, LV_STATE_PRESSED);
     lv_obj_add_style(obj, &style_imgbtn_disabled, LV_STATE_DISABLED);
   }
@@ -228,6 +262,23 @@ void GuppyScreen::save_calibration_coeff(lv_tc_coeff_t coeff) {
   conf->set<std::vector<float>>("/touch_calibration_coeff",
                                 {coeff.a, coeff.b, coeff.c, coeff.d, coeff.e, coeff.f});
   conf->save();
+}
+
+void GuppyScreen::refresh_theme() {
+  lv_theme_t *th = lv_theme_default_get();
+  ThemeConfig *theme_conf = ThemeConfig::get_instance();
+  auto primary_color = theme_conf->get_json("/primary_color").empty()
+                       ? lv_color_hex(0x2196F3)
+                       : lv_color_hex(std::stoul(theme_conf->get<std::string>("/primary_color"), nullptr, 16));
+
+  auto secondary_color = theme_conf->get_json("/secondary_color").empty()
+                         ? lv_color_hex(0xF44336)
+                         : lv_color_hex(std::stoul(theme_conf->get<std::string>("/secondary_color"), nullptr, 16));
+
+  lv_disp_t *disp = lv_disp_get_default();
+  lv_theme_t * new_theme =  lv_theme_default_init(disp, primary_color, secondary_color, true, th->font_normal);
+  lv_disp_set_theme(disp, new_theme);
+  lv_style_set_img_recolor(&style_imgbtn_pressed, primary_color);
 }
 
 /*Set in lv_conf.h as `LV_TICK_CUSTOM_SYS_TIME_EXPR`*/
